@@ -1,7 +1,11 @@
+import asyncio
+
 import cv2
 import time
 import threading
 import queue
+
+import websockets
 from deepface import DeepFace
 
 
@@ -78,47 +82,59 @@ queue_management_thread = threading.Thread(target=manage_frame_queue, args=(fram
 queue_management_thread.daemon = True  # 设置为后台线程
 queue_management_thread.start()
 
-# DroidCam 显示的IP地址、端口号和相机分辨率（可选 240p,480p,720p,1080p）
-cap = cv2.VideoCapture(get_DroidCam_url('192.168.43.1', 4747, '720p'))
 
-# 初始化帧计数器和时间
-frame_count = 0
-capture_count = 0
-start_time = time.time()
 
-while True:
-    ret, frame = cap.read()
-    if ret:
-        # 显示图像
-        frame_count = (frame_count + 1) % mod_value
 
-        # 每3帧将一帧和帧序号放到队列中
-        if frame_count % 3 == 0:
-            frame_queue.put((frame_count, frame))
-            capture_count += 1
+async def camera_stream(websocket, path):
+    # DroidCam 显示的IP地址、端口号和相机分辨率（可选 240p,480p,720p,1080p）
+    cap = cv2.VideoCapture(0)
 
-        # 读取处理结果并画框
-        with lock:
-            face_data = result['value']
-        for (x, y, w, h, emotion) in face_data:
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            cv2.putText(frame, emotion, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+    # 初始化帧计数器和时间
+    frame_count = 0
+    capture_count = 0
+    start_time = time.time()
+    try:
+        while True:
+            ret, frame = cap.read()
+            if ret:
+                # 显示图像
+                frame_count = (frame_count + 1) % mod_value
 
-        cv2.imshow('Real-time Emotion Analysis', frame)
+                # 每3帧将一帧和帧序号放到队列中
+                if frame_count % 3 == 0:
+                    frame_queue.put((frame_count, frame))
+                    capture_count += 1
 
-    # 每秒钟输出当前帧率
-    if time.time() - start_time >= 1:
-        print(f'FPS: {capture_count}')
-        capture_count = 0
-        start_time = time.time()
+                # 读取处理结果并画框
+                with lock:
+                    face_data = result['value']
+                for (x, y, w, h, emotion) in face_data:
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                    cv2.putText(frame, emotion, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
 
-    key = cv2.waitKey(1)
-    # 按q退出程序
-    if key == ord('q'):
-        break
+                cv2.imshow('Real-time Emotion Analysis', frame)
+                buffer = cv2.imencode('.jpg', frame)[1]
+                await websocket.send(buffer.tobytes())
+            # 每秒钟输出当前帧率
+            if time.time() - start_time >= 1:
+                print(f'FPS: {capture_count}')
+                capture_count = 0
+                start_time = time.time()
 
-# 释放VideoCapture
-cap.release()
+            key = cv2.waitKey(1)
+            # 按q退出程序
+            if key == ord('q'):
+                break
+
+
+    finally:
+        cap.release()
+
+start_server = websockets.serve(camera_stream, "0.0.0.0", 8080)
+
+asyncio.get_event_loop().run_until_complete(start_server)
+asyncio.get_event_loop().run_forever()
+
 # 销毁所有的窗口
 cv2.destroyAllWindows()
 
