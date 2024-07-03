@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import cv2
 import mediapipe as mp
 import numpy as np
@@ -13,6 +15,30 @@ pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
 
 # 打开视频文件或摄像头
 # cap = cv2.VideoCapture('queda.mp4')  # 使用视频文件
+
+import pymysql
+
+# 配置MySQL数据库
+db = pymysql.connect(
+    host='43.138.118.5',
+    port=3306,
+    user='root',
+    password='Woshishabi@233',
+    database='xxq'
+)
+
+cursor = db.cursor()
+
+from minio import Minio
+
+minio_client = Minio(
+    '43.138.118.5:9000',  # MinIO服务器地址
+    access_key='nI20OQaJKUCJFBPYREQT',
+    secret_key='viJ7ZoA3wCkNbkl7WQeKLe5O9mretoEFSoXvLKsn',
+    secure=False
+)
+
+bucket_name = "xxq"
 
 # 创建一个队列用来存储图像帧
 frame_queue = queue.Queue()
@@ -74,10 +100,68 @@ def process_frame_queue(frame_queue, result, lock, stop_event):
             continue
 
 
+def manage_frame_queue(frame_queue, mod_value, stop_event):
+    while not stop_event.is_set():
+        time.sleep(1)  # 每秒检查一次队列
+        if not frame_queue.empty():
+            first_frame_count = frame_queue.queue[0][0]
+            current_frame_count = frame_queue.queue[-1][0]
+            if (current_frame_count - first_frame_count) % mod_value > 10:
+                with frame_queue.mutex:
+                    frame_queue.queue.clear()
+
+
+def save_fall_data(fall_queue, db_lock, stop_event):
+    last_save_time = 0  # 上次保存时间
+    while not stop_event.is_set():
+        try:
+            fall_date, fall_frame = fall_queue.get(timeout=1)
+
+            current_time = time.time()
+            if current_time - last_save_time >= 60:
+                # 保存摔倒信息到数据库并获取插入后的fid
+                with db_lock:
+                    cursor.execute("INSERT INTO fall (fall_date) VALUES (%s)", (fall_date,))
+                    db.commit()
+                    fid = cursor.lastrowid
+
+                # 使用fid作为图像名称
+                image_name = f'{fid}.jpg'
+                image_path = f'fall/{image_name}'
+
+                # 保存图像到本地
+                cv2.imwrite(image_path, fall_frame)
+
+                # 上传图像到MinIO
+                minio_client.fput_object(bucket_name, f'fall/{image_name}', image_path, content_type='image/')
+
+                last_save_time = current_time  # 更新上次保存时间
+
+                print('Saved fall data')
+            fall_queue.task_done()
+        except queue.Empty:
+            continue
+
+
+fall_queue = queue.Queue()
+db_lock = threading.Lock()
+
+
 # 启动处理线程
 processing_thread = threading.Thread(target=process_frame_queue, args=(frame_queue, result, lock, stop_event))
 processing_thread.daemon = True  # 设置为后台线程
 processing_thread.start()
+
+# 启动管理队列的线程
+mod_value = 2 ** 32 - 1
+queue_management_thread = threading.Thread(target=manage_frame_queue, args=(frame_queue, mod_value, stop_event))
+queue_management_thread.daemon = True  # 设置为后台线程
+queue_management_thread.start()
+
+# 启动保存数据线程
+saving_thread = threading.Thread(target=save_fall_data, args=(fall_queue, db_lock, stop_event))
+saving_thread.daemon = True  # 设置为后台线程
+saving_thread.start()
 
 
 async def camera_stream(websocket, path):
@@ -104,13 +188,15 @@ async def camera_stream(websocket, path):
             # 读取处理结果并画框
             with lock:
                 processed_frame, landmarks, fall_detected = result['value'] if result['value'] is not None else (
-                frame, None, False)
+                    frame, None, False)
 
             if landmarks:
                 mp.solutions.drawing_utils.draw_landmarks(processed_frame, landmarks, mp_pose.POSE_CONNECTIONS)
                 if fall_detected:
                     cv2.putText(processed_frame, "Fall Detected", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2,
                                 cv2.LINE_AA)
+                    fall_date = datetime.now()
+                    fall_queue.put((fall_date, processed_frame))
 
             # 显示结果
             cv2.imshow('Frame', processed_frame)
@@ -130,7 +216,6 @@ async def camera_stream(websocket, path):
 
     finally:
         cap.release()
-
 
 
 # 启动WebSocket服务器

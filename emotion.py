@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 
 import cv2
 import time
@@ -8,6 +9,33 @@ import queue
 import websockets
 from deepface import DeepFace
 
+
+import pymysql
+
+negative_emotions = ['angry', 'disgust', 'fear', 'sad']
+
+
+# 配置MySQL数据库
+db = pymysql.connect(
+    host='43.138.118.5',
+    port=3306,
+    user='root',
+    password='Woshishabi@233',
+    database='xxq'
+)
+
+cursor = db.cursor()
+
+from minio import Minio
+
+minio_client = Minio(
+    '43.138.118.5:9000',  # MinIO服务器地址
+    access_key='nI20OQaJKUCJFBPYREQT',
+    secret_key='viJ7ZoA3wCkNbkl7WQeKLe5O9mretoEFSoXvLKsn',
+    secure=False
+)
+
+bucket_name = "xxq"
 
 def get_DroidCam_url(ip, port=4747, res='480p'):
     res_dict = {
@@ -61,13 +89,47 @@ def manage_frame_queue(frame_queue, mod_value, stop_event):
                     frame_queue.queue.clear()
 
 
+def save_emo_data(emo_queue, db_lock, stop_event):
+    last_save_time = 0  # 上次保存时间
+    while not stop_event.is_set():
+        try:
+            emo_date, emo_frame, emotion = emo_queue.get(timeout=1)
+
+            current_time = time.time()
+            if current_time - last_save_time >= 60:
+                # 保存摔倒信息到数据库并获取插入后的fid
+                with db_lock:
+                    cursor.execute("INSERT INTO emotion(type, emotion_date) VALUES (%s, %s)", (emotion, emo_date))
+                    db.commit()
+                    eid = cursor.lastrowid
+
+                # 使用fid作为图像名称
+                image_name = f'{eid}.jpg'
+                image_path = f'emo/{image_name}'
+
+                # 保存图像到本地
+                cv2.imwrite(image_path, emo_frame)
+
+                # 上传图像到MinIO
+                minio_client.fput_object(bucket_name, f'emo/{image_name}', image_path, content_type='image/')
+
+                last_save_time = current_time  # 更新上次保存时间
+
+                print('Saved emo data')
+            emo_queue.task_done()
+        except queue.Empty:
+            continue
+
+
 # 创建一个队列用来存储图像帧
 frame_queue = queue.Queue()
+emo_queue = queue.Queue()
+
 
 # 用于存储结果的字典和锁
 result = {'value': []}
 lock = threading.Lock()
-
+db_lock = threading.Lock()
 # 用于停止线程的事件
 stop_event = threading.Event()
 
@@ -82,7 +144,10 @@ queue_management_thread = threading.Thread(target=manage_frame_queue, args=(fram
 queue_management_thread.daemon = True  # 设置为后台线程
 queue_management_thread.start()
 
-
+# 启动保存数据线程
+saving_thread = threading.Thread(target=save_emo_data, args=(emo_queue, db_lock, stop_event))
+saving_thread.daemon = True  # 设置为后台线程
+saving_thread.start()
 
 
 async def camera_stream(websocket, path):
@@ -111,6 +176,9 @@ async def camera_stream(websocket, path):
                 for (x, y, w, h, emotion) in face_data:
                     cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
                     cv2.putText(frame, emotion, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+                    if emotion in negative_emotions:
+                        emo_date = datetime.now()
+                        emo_queue.put((emo_date, frame, emotion))
 
                 cv2.imshow('Real-time Emotion Analysis', frame)
                 buffer = cv2.imencode('.jpg', frame)[1]
