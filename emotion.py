@@ -166,7 +166,7 @@ async def camera_stream(websocket, path):
                 frame_count = (frame_count + 1) % mod_value
 
                 # 每3帧将一帧和帧序号放到队列中
-                if frame_count % 3 == 0:
+                if frame_count % 30 == 0:
                     frame_queue.put((frame_count, frame))
                     capture_count += 1
 
