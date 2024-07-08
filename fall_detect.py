@@ -1,4 +1,7 @@
+import smtplib
 from datetime import datetime
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 import cv2
 import mediapipe as mp
@@ -15,6 +18,44 @@ pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
 
 # 打开视频文件或摄像头
 # cap = cv2.VideoCapture('queda.mp4')  # 使用视频文件
+
+def send_email_to_all(users):
+    smtp_server = 'smtp.qq.com'  # 替换为您的SMTP服务器
+    smtp_port = 587  # 替换为您的SMTP端口
+    sender_email = '1261751931@qq.com'  # 替换为您的发送邮箱
+    sender_password = 'zzjicxwvvtbvfhfd'  # 替换为您的邮箱密码
+
+    subject = 'Fall Detected'
+    body = 'A fall has been detected. Please take appropriate action.'
+
+    for user_email in users:
+        msg = MIMEMultipart()
+        msg['From'] = sender_email
+        msg['To'] = user_email[0]
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain'))
+
+        try:
+            server = smtplib.SMTP(smtp_server, smtp_port)
+            server.starttls()
+            server.login(sender_email, sender_password)
+            text = msg.as_string()
+            server.sendmail(sender_email, user_email[0], text)
+            server.quit()
+            print(f'Email sent to {user_email}')
+        except Exception as e:
+            print(f'Failed to send email to {user_email}: {e}')
+
+def get_DroidCam_url(ip, port=4747, res='480p'):
+    res_dict = {
+        '240p': '320x240',
+        '480p': '640x480',
+        '720p': '1280x720',
+        '1080p': '1920x1080',
+    }
+    url = f'http://{ip}:{port}/video?{res_dict[res]}'
+    return url
+
 
 import pymysql
 
@@ -138,6 +179,11 @@ def save_fall_data(fall_queue, db_lock, stop_event):
                 last_save_time = current_time  # 更新上次保存时间
 
                 print('Saved fall data')
+
+                cursor.execute("SELECT email FROM users")
+                users = cursor.fetchall()
+                send_email_to_all(users)
+
             fall_queue.task_done()
         except queue.Empty:
             continue
@@ -165,6 +211,8 @@ saving_thread.start()
 
 
 async def camera_stream(websocket, path):
+    # cap = cv2.VideoCapture(get_DroidCam_url('192.168.43.3', 4747, res='480p'))
+
     cap = cv2.VideoCapture(0)  # 使用摄像头
     # 初始化帧计数器和时间
     frame_count = 0

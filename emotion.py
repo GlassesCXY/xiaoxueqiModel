@@ -152,8 +152,8 @@ saving_thread.start()
 
 async def camera_stream(websocket, path):
     # DroidCam 显示的IP地址、端口号和相机分辨率（可选 240p,480p,720p,1080p）
-    cap = cv2.VideoCapture(0)
-
+    cap = cv2.VideoCapture(get_DroidCam_url('192.168.43.1', 4747, res='480p'))
+    # cap = cv2.VideoCapture(0)
     # 初始化帧计数器和时间
     frame_count = 0
     capture_count = 0
