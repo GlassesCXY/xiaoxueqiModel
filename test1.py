@@ -84,7 +84,7 @@ queue_management_thread.start()
 
 async def camera_stream(websocket, path):
     print(1)
-    cap = cv2.VideoCapture(get_DroidCam_url('192.168.43.1', 4747, '720p'))
+    cap = cv2.VideoCapture(0)
     # 初始化帧计数器和时间
     frame_count = 0
     capture_count = 0
